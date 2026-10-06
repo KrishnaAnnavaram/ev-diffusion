@@ -1,0 +1,35 @@
+# secrets and local configuration
+.env
+.env.*
+!.env.example
+
+# local data: never commit downloads or generated files
+/data/*
+!/data/README.md
+*.db
+*.sqlite
+*.sqlite3
+*.xlsx
+*.parquet
+
+# generated reports and model files
+/reports/
+/models/
+/artifacts/
+/outputs/
+*.pkl
+*.joblib
+*.pt
+
+# python
+__pycache__/
+*.py[cod]
+*.egg-info/
+build/
+dist/
+.venv/
+venv/
+.pytest_cache/
+.ruff_cache/
+.mypy_cache/
+.ipynb_checkpoints/
