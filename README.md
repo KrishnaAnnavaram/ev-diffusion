@@ -8,7 +8,7 @@
 
 ![Models](https://img.shields.io/badge/Models-Bass_%2B_GBM-1F3864?style=for-the-badge)
 ![Baselines](https://img.shields.io/badge/Forecast_baselines-4-2E5FD9?style=for-the-badge)
-![Problems fixed](https://img.shields.io/badge/Reference_problems_fixed-9%2F9-6E86E8?style=for-the-badge)
+![Backtest](https://img.shields.io/badge/Backtest-rolling_origin-6E86E8?style=for-the-badge)
 ![Tests](https://img.shields.io/badge/Tests-86_passing-3DA35B?style=for-the-badge)
 ![Offline demo](https://img.shields.io/badge/Offline_demo-Yes-F5C542?style=for-the-badge)
 ![License](https://img.shields.io/badge/License-MIT-A0399B?style=for-the-badge)
@@ -509,7 +509,7 @@ All results below come from `pytest` and from `ev-diffusion demo` with the defau
 | Macro-F1, 5 folds × 10 repeats (synthetic) | `majority` 0.284, `complement_nb` 0.643, `linear_svm` 0.755, `logreg` 0.756 (corrected 95 % interval 0.675 to 0.838) | `ev-diffusion demo` |
 | Aspect concerns (synthetic) | `supported`: service, charging, price. `not supported`: range, comfort, performance, design | `ev-diffusion demo` |
 
-The tests show that each fix works on controlled data. The GBM tests get the true parameters back from clean synthetic data. The demo shows a known effect: the plain Bass model has a higher backtest error than the drift baseline on this series. Thus a Bass forecast without a backtest gives no evidence of quality. The numbers do not tell how the models perform on real EV data. The prototype had no out-of-sample result to compare with.
+The tests show that each design rule works on controlled data. The GBM tests get the true parameters back from clean synthetic data. The demo shows a known effect: the plain Bass model has a higher backtest error than the drift baseline on this series. Thus a Bass forecast without a backtest gives no evidence of quality. The numbers do not tell how the models perform on real EV data. The prototype had no out-of-sample result to compare with.
 
 ---
 
