@@ -269,8 +269,11 @@ The core package needs only NumPy, pandas, SciPy and scikit-learn. The transform
 ### 4.1 Full flow
 
 ```mermaid
-flowchart TB
-    R["registration file"] --> L1["load + column contract"]
+flowchart TD
+    SY["synth or demo: write_synthetic"] -.-> R
+    SY -.-> C
+    SY -.-> V
+    R[/"registration file"/] --> L1["load + column contract"]
     L1 --> COV["coverage table"]
     COV --> PY{"partial last year?"}
     PY -->|"yes"| DROP["remove the last year"]
@@ -280,15 +283,16 @@ flowchart TB
     SRC -->|"no"| BAL["series from the balanced panel"]
     NAT --> FIT["Bass fit (period + cumulative)"]
     BAL --> FIT
-    C["covariate file"] --> Z["log changes Z"]
+    C[/"covariate file"/] --> Z["log changes Z"]
     Z --> ID{"identifiable?"}
     ID -->|"yes"| GBM["GBM fit + F test"]
     ID -->|"no"| NOTE["note: GBM not fitted"]
+    FIT -->|"F test against Bass"| GBM
     FIT --> BT["rolling-origin backtest vs baselines"]
     GBM --> BT
     FIT --> BOOT["block bootstrap"]
     BOOT --> FC["forecast + 95 % intervals"]
-    V["review file"] --> L2["load + labels (0 = not rated) + duplicates"]
+    V[/"review file"/] --> L2["load + labels (0 = not rated) + duplicates"]
     L2 --> CV["repeated stratified CV, macro-F1"]
     L2 --> ASP["aspect table + concern status"]
     BT --> REP["report.md + report.json + CSV"]
@@ -296,6 +300,11 @@ flowchart TB
     CV --> REP
     ASP --> REP
     REP --> MK["market alignment note"]
+    MK --> OUT[("output folder<br/>report.md, report.json, CSV tables")]
+    OUT --> HUMAN{{"HUMAN<br/>reviewer checks every number"}}
+
+    classDef human fill:#fff3cd,stroke:#b8901f,color:#3d2f00,font-weight:bold
+    class HUMAN human
 ```
 
 ### 4.2 The life cycle of one study
