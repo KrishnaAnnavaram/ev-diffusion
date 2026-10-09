@@ -66,6 +66,7 @@ This README is the **one location that explains all of ev-diffusion**. It gives 
 4. 🔄 [The end-to-end workflow](#4-the-end-to-end-workflow)
    - 4.1 [Full flow](#41-full-flow)
    - 4.2 [The life cycle of one study](#42-the-life-cycle-of-one-study)
+   - 4.3 [Who does which step](#43-who-does-which-step)
 5. 🔵 [Registration data and the coverage audit](#5-registration-data-and-the-coverage-audit)
 6. 🟢 [Diffusion models, backtest and bootstrap](#6-diffusion-models-backtest-and-bootstrap)
 7. 🟣 [Review sentiment and aspects](#7-review-sentiment-and-aspects)
@@ -136,6 +137,66 @@ flowchart LR
 | Transformer model (optional) | `src/ev_diffusion/sentiment/transformer.py` | Frozen encoder features plus logistic regression |
 | Report | `src/ev_diffusion/report.py` | Full study, Markdown and JSON output |
 | CLI | `src/ev_diffusion/cli.py` | The `ev-diffusion` command |
+
+The component map shows which module calls which module. An arrow points from the caller to the module that it uses.
+
+```mermaid
+flowchart TB
+    CLI["cli.py<br/>ev-diffusion command"]
+    CFG["config.py<br/>Settings.from_env"]
+    REP["report.py<br/>adoption_study, sentiment_study,<br/>write_outputs"]
+    SCH["schema.py<br/>conform, read_table"]
+    BT["backtest.py<br/>rolling_origin, summarize"]
+    subgraph DATA["data/"]
+        REG["registrations.py<br/>load_registrations, build_series"]
+        COVM["covariates.py<br/>load_covariates, design_matrix"]
+        REV["reviews.py<br/>load_reviews, prepare_reviews"]
+        SYN["synthetic.py<br/>write_synthetic"]
+    end
+    subgraph DIFF["diffusion/"]
+        BASS["bass.py<br/>fit_bass"]
+        GBM["gbm.py<br/>fit_gbm, compare_nested"]
+        INF["inference.py<br/>OLS and HAC covariance"]
+        BASE["baselines.py<br/>default_forecasters"]
+        UNC["uncertainty.py<br/>bootstrap_bass"]
+    end
+    subgraph SENT["sentiment/"]
+        EVA["evaluate.py<br/>cross_validate"]
+        MOD["models.py<br/>make_model"]
+        PRE["preprocess.py<br/>ReviewAnalyzer"]
+        ASP["aspects.py<br/>aspect_table"]
+        TRF["transformer.py<br/>optional extra"]
+    end
+
+    CLI --> CFG
+    CLI --> REP
+    CLI --> SYN
+    CLI -- "backtest" --> BT
+    CLI -- "coverage, fit" --> REG
+    REP --> REG
+    REP --> COVM
+    REP --> REV
+    REP --> BASS
+    REP --> GBM
+    REP --> BT
+    REP --> UNC
+    REP --> EVA
+    REP --> ASP
+    REG --> SCH
+    REV --> SCH
+    COVM --> SCH
+    BT --> BASE
+    BASE --> BASS
+    BASE --> GBM
+    GBM --> BASS
+    BASS --> INF
+    UNC --> BASS
+    SYN --> GBM
+    EVA --> MOD
+    MOD --> PRE
+    MOD -. "transformer model" .-> TRF
+    ASP --> PRE
+```
 
 ### 2.2 System context
 
@@ -239,6 +300,46 @@ flowchart TB
 
 ### 4.2 The life cycle of one study
 
+```mermaid
+stateDiagram-v2
+    state "Registration rows" as Rows
+    state "Coverage audited" as Audited
+    state "Adoption series" as Series
+    state "Bass fits, period and cumulative" as BassFit
+    state "GBM fit and F test" as GbmFit
+    state "Backtest tables" as Backtested
+    state "Bootstrap forecast" as Forecast
+    state "Labelled reviews" as Labelled
+    state "CV summary" as CV
+    state "Aspect table" as Aspects
+    state "Report files written" as Written
+    state "No input, exit code 2" as NoInput
+    [*] --> Rows: load_registrations
+    [*] --> Labelled: only reviews.csv exists
+    [*] --> NoInput: no registrations.csv and no reviews.csv
+    Rows --> SchemaError: column contract fails
+    Rows --> Audited: coverage_summary
+    Audited --> Series: build_series
+    Audited --> ValueError: no complete window
+    Series --> BassFit: fit_bass
+    BassFit --> GbmFit: covariates identifiable
+    BassFit --> Backtested: no covariate file, or GBM not fitted
+    GbmFit --> Backtested: rolling_origin
+    Backtested --> Forecast: bootstrap_bass
+    Forecast --> RuntimeError: every refit failed
+    Forecast --> Labelled: reviews.csv exists
+    Forecast --> Written: no reviews.csv
+    Labelled --> ValueError: a label has fewer than 2 reviews
+    Labelled --> CV: cross_validate
+    CV --> Aspects: aspect_table
+    Aspects --> Written: write_outputs
+    Written --> [*]
+    NoInput --> [*]
+    SchemaError --> [*]
+    ValueError --> [*]
+    RuntimeError --> [*]
+```
+
 1. Load the registration file and check it against its column contract.
 2. Make the coverage table. Remove a partial last year.
 3. Build the series from the national rows or from the balanced panel.
@@ -251,11 +352,73 @@ flowchart TB
 10. Make the aspect table and the market alignment note.
 11. Write `report.md`, `report.json` and the CSV tables.
 
+### 4.3 Who does which step
+
+```mermaid
+sequenceDiagram
+    autonumber
+    actor AN as Analyst
+    participant CLI as cli.py
+    participant REP as report.py
+    participant REG as registrations.py
+    participant DIF as bass.py and gbm.py
+    participant BT as backtest.py
+    participant UNC as uncertainty.py
+    participant SEN as sentiment modules
+    participant FS as reports folder
+
+    AN->>CLI: ev-diffusion report --data-dir data --out reports
+    CLI->>CLI: Settings.from_env, then the CLI flags
+    CLI->>REP: adoption_study(registrations, covariates)
+    REP->>REG: load_registrations, build_series
+    REG-->>REP: AdoptionSeries and notes
+    REP->>DIF: fit_bass in period and cumulative mode
+    opt covariates.csv exists
+        REP->>DIF: fit_gbm on the log changes Z, compare_nested
+    end
+    REP->>BT: rolling_origin with default_forecasters
+    BT-->>REP: backtest rows, summary and ranking
+    REP->>UNC: bootstrap_bass(n_boot, seed)
+    UNC-->>REP: forecast intervals
+    opt reviews.csv exists
+        CLI->>REP: sentiment_study(reviews)
+        REP->>SEN: prepare_reviews, cross_validate, aspect_table
+        SEN-->>REP: CV result and aspect table
+    end
+    CLI->>REP: write_outputs(out_dir)
+    REP->>FS: CSV tables, report.json, report.md
+    CLI-->>AN: path of report.md and the count of other files
+```
+
 ---
 
 ## 5. Registration data and the coverage audit
 
 **Purpose.** Make one yearly series that has the same coverage in every year.
+
+```mermaid
+flowchart TD
+    IN[/"registrations.csv or .xlsx"/] --> CON{"schema.conform:<br/>aliases, types, count 0 or more?"}
+    CON -- "contract fails" --> ERR1[/"SchemaError"/]
+    CON -- "ok" --> NORM["normalize_registrations:<br/>state in upper case, UNKNOWN if absent"]
+    NORM --> COV[/"coverage_summary<br/>coverage.csv"/]
+    NORM --> LCY{"last_complete_year given?"}
+    LCY -- "yes" --> CUT["Remove the later years"]
+    LCY -- "no" --> PART{"is_partial_last_year?"}
+    PART -- "yes" --> DROP["Remove the final year"]
+    PART -- "no" --> SPLIT
+    CUT --> SPLIT["Separate the national rows<br/>and the state rows"]
+    DROP --> SPLIT
+    SPLIT --> POL{"National rows exist and<br/>policy is not balanced?"}
+    POL -- "yes" --> FULL{"No gap year and<br/>8 or more years?"}
+    FULL -- "yes" --> NAT[/"Series from the national rows"/]
+    FULL -- "no, policy national" --> ERR2[/"ValueError"/]
+    FULL -- "no, policy auto" --> BAL
+    POL -- "no, policy national" --> ERR2
+    POL -- "no" --> BAL["best_balanced_window:<br/>start year with the most state-years"]
+    BAL -- "no window of 8 years" --> ERR2
+    BAL --> SUM[/"Series: sum of the states<br/>present in every year, note on left-out states"/]
+```
 
 | Input | Output |
 |---|---|
@@ -295,7 +458,49 @@ flowchart TB
 
 **The Bass model.** `F(t) = (1 - exp(-(p+q) t)) / (1 + (q/p) exp(-(p+q) t))`. The adoptions of period `i` are `m (F(i) - F(i-1))`. Period 1 is the first year of the series.
 
+```mermaid
+flowchart TD
+    Y[/"Yearly series y and mode"/] --> CHK{"as_counts: 4 or more periods,<br/>finite, not negative, sum above 0?"}
+    CHK -- "no" --> ERR[/"ValueError"/]
+    CHK -- "yes" --> TGT["to_target: period values<br/>or the running total"]
+    TGT --> X0{"x0 given?<br/>bootstrap refit"}
+    X0 -- "yes" --> ONE["One start point from x0"]
+    X0 -- "no" --> GRID["12 start points: p 0.002 or 0.02,<br/>q 0.25 or 0.7, m 1.5, 5 or 25 × total"]
+    ONE --> LSQ["least_squares, method trf,<br/>bounds on p, q and m"]
+    GRID --> LSQ
+    LSQ --> BEST["Keep the fit with the lowest cost"]
+    BEST --> JAC["numeric_jacobian at the estimate"]
+    JAC --> UB{"m at its upper bound?"}
+    UB -- "yes" --> N1["Note: the data do not identify m"]
+    UB -- "no" --> IDN
+    N1 --> IDN{"identification_notes:<br/>peak after the last period, or<br/>HAC SE of m above 50 % of m?"}
+    IDN -- "yes" --> N2["Note: m is weakly identified"]
+    IDN -- "no" --> OUT
+    N2 --> OUT[/"DiffusionFit: p, q, m, fitted values,<br/>OLS and HAC tables, diagnostics"/]
+```
+
 **The GBM.** The clock runs at speed `x(i) = 1 + sum_j beta_j z_j(i)`, where `z_j(i)` is the log change of covariate `j`. Then `X(i) = X(i-1) + x(i)` and `F_GBM(i) = F(X(i))`. If all `beta` values are 0, the GBM is the Bass model.
+
+```mermaid
+flowchart TD
+    IN[/"Series y, log changes Z,<br/>covariate names"/] --> C1{"At least one covariate?"}
+    C1 -- "no" --> ERR[/"GBMIdentificationError"/]
+    C1 -- "yes" --> C2{"Standard deviation of each<br/>log change 1e-9 or more?"}
+    C2 -- "no" --> ERR
+    C2 -- "yes" --> C3{"Z with a constant column<br/>has full rank?"}
+    C3 -- "no" --> ERR
+    ERR --> SKIP[/"adoption_study note:<br/>GBM not fitted"/]
+    C3 -- "yes" --> BASS["fit_bass for start values"]
+    BASS --> ST["12 start points: 4 from the Bass fit<br/>with beta 0, 0.5, -0.5, 1.5, and 8 from a grid"]
+    ST --> LSQ["least_squares on gbm_period,<br/>beta bounds -10 to 10"]
+    LSQ --> BEST["Keep the fit with the lowest cost"]
+    BEST --> COND{"Jacobian condition<br/>number above 1e6?"}
+    COND -- "yes" --> NOTE["Note: the parameters are<br/>weakly identified"]
+    COND -- "no" --> FIT
+    NOTE --> FIT[/"GBM DiffusionFit"/]
+    FIT --> CMP["compare_nested with the Bass fit"]
+    CMP --> OUT[/"F statistic, p-value,<br/>delta AIC, AICc and BIC"/]
+```
 
 **Procedure**
 
@@ -324,11 +529,65 @@ flowchart TB
 | `bass_cumulative` | Bass fit in `cumulative` mode |
 | `gbm` | GBM fit, only with a covariate file |
 
+The diagram shows the rolling-origin backtest. A model never sees a year at or after its origin.
+
+```mermaid
+flowchart TD
+    IN[/"Series y, years, optional Z,<br/>min_train 8, horizon 3"/] --> LOOP["For each origin o<br/>from min_train to n - 1"]
+    LOOP --> TR["Train part: periods 0 to o - 1,<br/>Z rows of the same periods"]
+    TR --> MOD["For each forecaster<br/>in default_forecasters"]
+    MOD --> FIT["New model: fit on the train part"]
+    FIT --> PRED["predict the next 1 to 3 years,<br/>the GBM gets the actual future Z"]
+    PRED --> OK{"Fit or predict<br/>raised an error?"}
+    OK -- "yes" --> FAIL["status failed: error name,<br/>forecast NaN"]
+    OK -- "no" --> GOOD["status ok"]
+    FAIL --> ROWS[("backtest.csv: one row for each<br/>origin, model and horizon")]
+    GOOD --> ROWS
+    ROWS --> SUM["summarize: n, failed, MAE,<br/>RMSE, MAPE, sMAPE"]
+    SUM --> RANK[/"ranking: mean MAPE<br/>over horizons, best first"/]
+```
+
+The diagram shows the moving-block residual bootstrap of the Bass fit.
+
+```mermaid
+flowchart TD
+    IN[/"Bass fit in period mode, horizon,<br/>n_boot 200, block 3, seed"/] --> RES["Relative residuals:<br/>(y - fit) / fit, mean removed"]
+    RES --> LOOP["Repeat n_boot times"]
+    LOOP --> DRAW["_block_sample: blocks of 3<br/>residuals, with replacement"]
+    DRAW --> YS["New series:<br/>fit × (1 + draw), not below 0"]
+    YS --> REFIT{"fit_bass from x0<br/>succeeds?"}
+    REFIT -- "no" --> FAILC["Count one failed refit"]
+    REFIT -- "yes" --> PATH["Keep p, q, m and<br/>the mean forecast path"]
+    PATH --> NOISE["Add block residuals to the path:<br/>prediction path, not below 0"]
+    FAILC --> ANY
+    NOISE --> ANY{"Any refit kept<br/>after the last repeat?"}
+    ANY -- "no" --> ERR[/"RuntimeError"/]
+    ANY -- "yes" --> INT[/"2.5 and 97.5 percentiles: intervals of<br/>p, q, m, mean path and prediction path"/]
+    INT --> FC[("forecast.csv")]
+```
+
 ---
 
 ## 7. Review sentiment and aspects
 
 **Purpose.** Measure the sentiment of owner reviews with honest metrics, and find the topics that the reviews criticise.
+
+```mermaid
+flowchart TD
+    IN[/"reviews.csv"/] --> CON["schema.conform: text, rating,<br/>optional model_name and market"]
+    CON --> EMP{"Text empty?"}
+    EMP -- "yes" --> R1["Remove, count n_empty"]
+    EMP -- "no" --> DUP{"dedupe_key equal to<br/>an earlier review?"}
+    DUP -- "yes" --> R2["Remove, count n_duplicates"]
+    DUP -- "no" --> LAB{"rating_to_label"}
+    LAB -- "0 or less, empty, above 5" --> R3["Remove as unrated,<br/>count n_unrated"]
+    LAB -- "below 2.5" --> NEG["negative"]
+    LAB -- "2.5 to below 3.5" --> NEU["neutral"]
+    LAB -- "3.5 to 5" --> POS["positive"]
+    NEG --> OUT[/"LabelledReviews: frame,<br/>counts, market, notes"/]
+    NEU --> OUT
+    POS --> OUT
+```
 
 | Input | Output |
 |---|---|
@@ -346,6 +605,64 @@ flowchart TB
 8. Compare each model with the majority baseline on the same folds with the corrected paired t test.
 9. Cut each review into sentences. Tag the aspects of each sentence and give the sentence a polarity.
 10. Count the mentions of each aspect and calculate the negative share with a Wilson 95 % interval.
+
+The diagram shows how `ReviewAnalyzer` changes one review into TF-IDF features (steps 3 to 5).
+
+```mermaid
+flowchart TD
+    T[/"Review text"/] --> TOK["tokenize: lower case, n't to not,<br/>words and punctuation tokens"]
+    TOK --> KIND{"Type of token?"}
+    KIND -- "punctuation, but,<br/>however, although" --> BRK["End the negation scope,<br/>drop the token"]
+    KIND -- "negation cue:<br/>not, no, never, without" --> CUE["Start the scope,<br/>keep the word"]
+    KIND -- "stopword" --> DROP["Drop the word"]
+    KIND -- "other word" --> SCOPE{"In a negation scope?"}
+    SCOPE -- "yes" --> NOTW["NOT_word"]
+    SCOPE -- "no" --> WORD["word"]
+    CUE --> UNI["Unigram list"]
+    NOTW --> UNI
+    WORD --> UNI
+    UNI --> BI["Add the bigrams"]
+    BI --> TF[/"TfidfVectorizer features,<br/>fit on the training fold only"/]
+```
+
+The diagram shows the repeated stratified cross-validation (steps 6 to 8).
+
+```mermaid
+flowchart TD
+    IN[/"Texts and labels"/] --> C1{"2 or more classes?"}
+    C1 -- "no" --> ERR[/"ValueError"/]
+    C1 -- "yes" --> K["splits: the smaller of 5<br/>and the smallest class size"]
+    K --> C2{"splits 2 or more?"}
+    C2 -- "no" --> ERR
+    C2 -- "yes" --> CV["RepeatedStratifiedKFold:<br/>splits × cv_repeats, seed"]
+    CV --> M["For each fold and model: majority,<br/>logreg, complement_nb, linear_svm,<br/>optional transformer"]
+    M --> FIT["clone the pipeline,<br/>fit it on the training fold"]
+    FIT --> SC["Score the test fold: macro-F1,<br/>balanced accuracy, accuracy,<br/>recall of each label"]
+    SC --> FOLDS[("cv_folds.csv")]
+    FOLDS --> SUM["summarize: mean and<br/>Nadeau-Bengio corrected 95 % interval"]
+    SUM --> GAIN["corrected_paired_test:<br/>macro-F1 gain against majority"]
+    GAIN --> OUT[("cv_summary.csv")]
+```
+
+The diagram shows how `aspect_table` finds the concerns (steps 9 and 10).
+
+```mermaid
+flowchart TD
+    IN[/"Labelled review texts"/] --> SPL["Cut each review into sentences<br/>at . ! ? or a new line"]
+    SPL --> TOK["tokenize each sentence"]
+    TOK --> POL["sentence_polarity: opinion words,<br/>sign flipped in a negation scope"]
+    TOK --> KEY{"Sentence holds a keyword<br/>of an aspect in ASPECTS?"}
+    KEY -- "no" --> SKIP["No mention"]
+    KEY -- "yes" --> MEN["One mention: aspect<br/>and sentence polarity"]
+    POL --> MEN
+    MEN --> CNT["Count mentions, reviews,<br/>positive, negative, neutral"]
+    CNT --> SH["Negative share of the polar mentions,<br/>Wilson 95 % interval"]
+    SH --> SUP{"5 or more mentions and<br/>Wilson lower bound above 0.2?"}
+    SUP -- "yes" --> S1[/"concern: supported"/]
+    SUP -- "no" --> S2[/"concern: not supported"/]
+    S1 --> OUT[("aspects.csv")]
+    S2 --> OUT
+```
 
 **Rules**
 
@@ -366,6 +683,18 @@ flowchart TB
 ---
 
 ## 8. Decision rules and thresholds
+
+The market alignment rule decides if the report can put the aspect table next to the adoption series. The diagram shows `market_note` in `report.py`.
+
+```mermaid
+flowchart TD
+    A[/"Registration market:<br/>EV_DIFFUSION_MARKET or --market"/] --> CHK
+    B[/"Review market: --review-market,<br/>else the market column"/] --> CHK{"Both markets known?"}
+    CHK -- "no" --> N1[/"Market unknown: aspects are not<br/>linked to the adoption curve"/]
+    CHK -- "yes" --> EQ{"Same market,<br/>case ignored?"}
+    EQ -- "no" --> N2[/"Different markets: the report<br/>does not link aspects to the curve"/]
+    EQ -- "yes" --> N3[/"Same market: the aspect table<br/>is descriptive, not causal"/]
+```
 
 | Rule | Value | Code |
 |---|---|---|
@@ -461,20 +790,50 @@ pytest -q
 | `report` | The full study from a data folder |
 | `demo` | Synthetic data plus the full study |
 
+The diagram shows the order of the commands and the files that connect them.
+
+```mermaid
+flowchart LR
+    INS["pip install -e .[dev]"] --> SYN["ev-diffusion synth --out data"]
+    SYN --> DATA[("data/registrations.csv,<br/>covariates.csv, reviews.csv")]
+    DATA --> COVG["coverage"]
+    DATA --> FIT["fit"]
+    DATA --> BT["backtest"]
+    DATA --> FC["forecast"]
+    DATA --> SEN["sentiment"]
+    DATA --> ASP["aspects"]
+    DATA --> REP["report --data-dir data"]
+    BT -- "--out" --> BCSV[("reports/backtest.csv")]
+    REP --> OUT[("reports/: report.md,<br/>report.json, CSV tables")]
+    INS --> DEMO["demo --out reports/demo"]
+    DEMO --> DOUT[("reports/demo/: synthetic_data/<br/>and the report files")]
+```
+
 ### 10.4 Environment variables
 
 | Variable | Used by | Meaning |
 |---|---|---|
 | `EV_DIFFUSION_DATA_DIR` | `report` | Data folder, default `data` |
 | `EV_DIFFUSION_OUTPUT_DIR` | `report` | Output folder, default `reports` |
-| `EV_DIFFUSION_SEED` | bootstrap, cross-validation, `synth` | Random seed, default `42` |
+| `EV_DIFFUSION_SEED` | bootstrap, cross-validation, synthetic data of `demo` | Random seed, default `42`. The `synth` command uses only `--seed` (default `42`) |
 | `EV_DIFFUSION_N_BOOT` | bootstrap | Number of refits, default `200`, minimum `20` |
 | `EV_DIFFUSION_CV_REPEATS` | cross-validation | Repeats of the stratified folds, default `10` |
 | `EV_DIFFUSION_LAST_COMPLETE_YEAR` | coverage audit | Last complete year. Empty means the partial-year rule |
 | `EV_DIFFUSION_MARKET` | coverage audit, report | Market of the registration data, default `US` |
 | `EV_DIFFUSION_TRANSFORMER_MODEL` | `transformer` model | Hugging Face model name, default `distilbert-base-uncased` |
 
-CLI flags override these values. ev-diffusion needs no credentials. Keep local settings in a `.env` file. Git ignores this file.
+CLI flags override these values. ev-diffusion needs no credentials. The CLI does not read a `.env` file. Set the variables in your shell. Git ignores a local `.env` file.
+
+```mermaid
+flowchart LR
+    ENV[/"Process environment:<br/>EV_DIFFUSION_ variables"/] --> FE["Settings.from_env"]
+    FE --> CHK{"Integer values valid?<br/>N_BOOT 20 or more,<br/>CV_REPEATS 1 or more"}
+    CHK -- "no" --> ERR[/"ValueError"/]
+    CHK -- "yes" --> SET["Settings with defaults<br/>for empty variables"]
+    FLAGS[/"CLI flags: --seed, --n-boot, --cv-repeats,<br/>--last-complete-year, --market"/] --> REPL["dataclasses.replace"]
+    SET --> REPL
+    REPL --> RUN[/"Settings of the command"/]
+```
 
 ---
 
